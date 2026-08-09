@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QListWidget,
+    QPlainTextEdit,
     QProgressBar,
     QPushButton,
     QScrollArea,
@@ -42,6 +43,7 @@ from ..core.injector import (
 from ..core.recorder import Recorder, iter_replay
 from ..core.scheduler import SchedEntry, Scheduler
 from ..core.match_flow import MatchConfig, MatchFlow, PHASE_NAMES
+from ..core.visual import path_points_from_0307, robot_positions_from_0305, utf16_text
 from ..protocol.frame import FrameParser
 from ..protocol.commands import COMMANDS, CommandSpec, decode_command, default_values, encode_command
 from ..protocol.frame import ParsedFrame, build_frame
@@ -55,6 +57,7 @@ from ..protocol.ui_graphics import (
 )
 from .canvas import RefereeCanvas
 from .field_editor import FieldEditor
+from .map_canvas import MapCanvas
 
 
 def _fmt_time(t: float | None = None) -> str:
@@ -581,8 +584,16 @@ class ReceiveTab(QWidget):
         self.figure_list = QListWidget()
         cv.addWidget(self.figure_list, 1)
         right.addTab(canvas_wrap, "UI 图形")
-        self.hex_view = QLineEdit()
+        map_wrap = QWidget()
+        mv = QVBoxLayout(map_wrap)
+        self.map_canvas = MapCanvas()
+        mv.addWidget(self.map_canvas, 1)
+        self.map_legend = QLabel("红点=对方  蓝点=己方  黄线=哨兵路径(0x0307)")
+        mv.addWidget(self.map_legend)
+        right.addTab(map_wrap, "小地图")
+        self.hex_view = QPlainTextEdit()
         self.hex_view.setReadOnly(True)
+        self.hex_view.setMaximumBlockCount(1000)
         right.addTab(self.hex_view, "原始数据")
         splitter.addWidget(right)
         splitter.setSizes([900, 700])
@@ -622,8 +633,8 @@ class ReceiveTab(QWidget):
         for col, text in enumerate(items):
             self.table.setItem(row, col, QTableWidgetItem(text))
         self.table.scrollToBottom()
-        if frame.cmd_id == 0x0301:
-            # 收到 UI 帧自动选中并刷新右侧解析/画布
+        if direction == "RX" and frame.cmd_id in (0x0301, 0x0305, 0x0307, 0x0308):
+            # 收到下位机 UI/小地图帧自动选中并刷新右侧解析/画布
             self.table.selectRow(row)
 
     def _on_select(self) -> None:
@@ -631,7 +642,7 @@ class ReceiveTab(QWidget):
         if row < 0 or row >= len(self._frames):
             return
         direction, frame = self._frames[row]
-        self.hex_view.setText(frame.raw.hex(" "))
+        self.hex_view.setPlainText(frame.raw.hex(" "))
         spec = COMMANDS.get(frame.cmd_id)
         self.decode_table.setRowCount(0)
         if frame.cmd_id == 0x0301 and len(frame.data) >= 6:
@@ -666,6 +677,17 @@ class ReceiveTab(QWidget):
                 self._add_decode_row("内容", content.hex(" "), "机器人间通信")
         elif spec is not None:
             values = decode_command(spec, frame.data)
+            if frame.cmd_id == 0x0305:
+                positions = robot_positions_from_0305(values)
+                self.map_canvas.set_positions(positions)
+                self._add_decode_row("可视位置", f"{len(positions)} 个机器人", "")
+            elif frame.cmd_id == 0x0307:
+                points = path_points_from_0307(values)
+                self.map_canvas.add_path(points)
+                self._add_decode_row("路径点", f"{len(points)} 个点", "")
+            elif frame.cmd_id == 0x0308:
+                text = utf16_text(bytes(values.get("user_data", b"")))
+                self._add_decode_row("消息文本(UTF-16LE)", text or "(空)", "")
             for chunk in spec.chunks:
                 from ..protocol.commands import BitGroup
                 if isinstance(chunk, BitGroup):
@@ -693,6 +715,7 @@ class ReceiveTab(QWidget):
         self.decode_table.setRowCount(0)
         self._frames.clear()
         self.canvas.reset()
+        self.map_canvas.reset()
         self.figure_list.clear()
 
 
