@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
 from ..core.recorder import Recorder
 from ..core.transport import LoopbackTransport, SerialTransport, list_serial_ports
 from ..protocol.frame import FrameParser
+from .client_tab import ClientTab
 from .tabs import MatchTab, ReceiveTab, ReplayTab, SchedulerTab, SendTab
 
 
@@ -47,6 +48,7 @@ class MainWindow(QMainWindow):
         self.scheduler_tab = SchedulerTab(self.send_bytes, self.next_seq)
         self.match_tab = MatchTab(self.send_bytes, self.next_seq)
         self.replay_tab = ReplayTab(self.recorder, self.send_bytes)
+        self.client_tab = ClientTab()
 
         tabs = QTabWidget()
         tabs.addTab(self.send_tab, "发送")
@@ -54,6 +56,7 @@ class MainWindow(QMainWindow):
         tabs.addTab(self.match_tab, "比赛流程")
         tabs.addTab(self.receive_tab, "接收/解析")
         tabs.addTab(self.replay_tab, "记录回放")
+        tabs.addTab(self.client_tab, "自定义客户端")
         self.setCentralWidget(tabs)
 
         self.statusBar().addWidget(QLabel("裁判系统模拟器 v0.1"))
