@@ -17,7 +17,7 @@ from PySide6.QtWidgets import (
 from ..core.recorder import Recorder
 from ..core.transport import LoopbackTransport, SerialTransport, list_serial_ports
 from ..protocol.frame import FrameParser
-from .tabs import ReceiveTab, ReplayTab, SchedulerTab, SendTab
+from .tabs import MatchTab, ReceiveTab, ReplayTab, SchedulerTab, SendTab
 
 
 class RxBridge(QObject):
@@ -45,11 +45,13 @@ class MainWindow(QMainWindow):
         self.receive_tab = ReceiveTab()
         self.send_tab = SendTab(self.send_bytes, self.next_seq)
         self.scheduler_tab = SchedulerTab(self.send_bytes, self.next_seq)
+        self.match_tab = MatchTab(self.send_bytes, self.next_seq)
         self.replay_tab = ReplayTab(self.recorder, self.send_bytes)
 
         tabs = QTabWidget()
         tabs.addTab(self.send_tab, "发送")
         tabs.addTab(self.scheduler_tab, "周期发送")
+        tabs.addTab(self.match_tab, "比赛流程")
         tabs.addTab(self.receive_tab, "接收/解析")
         tabs.addTab(self.replay_tab, "记录回放")
         self.setCentralWidget(tabs)

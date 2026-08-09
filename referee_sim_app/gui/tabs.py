@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QListWidget,
+    QProgressBar,
     QPushButton,
     QScrollArea,
     QSpinBox,
@@ -40,6 +41,7 @@ from ..core.injector import (
 )
 from ..core.recorder import Recorder, iter_replay
 from ..core.scheduler import SchedEntry, Scheduler
+from ..core.match_flow import MatchConfig, MatchFlow, PHASE_NAMES
 from ..protocol.frame import FrameParser
 from ..protocol.commands import COMMANDS, CommandSpec, decode_command, default_values, encode_command
 from ..protocol.frame import ParsedFrame, build_frame
@@ -814,3 +816,171 @@ class ReplayTab(QWidget):
             self.timer.stop()
             self.play_btn.setText("播放")
             self.status_label.setText(f"回放完成，共 {self._replay_idx} 帧")
+
+
+class MatchTab(QWidget):
+    """全流程比赛场景：按阶段推进并动态投喂裁判数据。"""
+
+    def __init__(self, send_cb: Callable[[bytes, str], None], next_seq: Callable[[], int],
+                 parent=None) -> None:
+        super().__init__(parent)
+        self._send_cb = send_cb
+        self._next_seq = next_seq
+        self.flow = MatchFlow()
+        self._scheduler = Scheduler()
+        self._last_tick = time.monotonic()
+        self._running = False
+        self._total_sent = 0
+
+        layout = QVBoxLayout(self)
+        top = QHBoxLayout()
+        self.start_btn = QPushButton("开始比赛流程")
+        self.start_btn.clicked.connect(self._toggle)
+        top.addWidget(self.start_btn)
+        self.reset_btn = QPushButton("重置")
+        self.reset_btn.clicked.connect(self._reset)
+        top.addWidget(self.reset_btn)
+        self.phase_label = QLabel("阶段: 未开始")
+        top.addWidget(self.phase_label)
+        self.remain_label = QLabel("剩余: —")
+        top.addWidget(self.remain_label)
+        self.sent_label = QLabel("已发送: 0")
+        top.addWidget(self.sent_label)
+        top.addStretch(1)
+        layout.addLayout(top)
+
+        self.progress = QProgressBar()
+        self.progress.setRange(0, 1000)
+        layout.addWidget(self.progress)
+
+        cfg = QHBoxLayout()
+        cfg.addWidget(QLabel("机器人ID:"))
+        self.robot_combo = QComboBox()
+        for rid, label in ((1, "红英雄"), (2, "红工程"), (3, "红步兵3"), (4, "红步兵4"),
+                           (5, "红步兵5"), (6, "红空中"), (7, "红哨兵"), (9, "红雷达"),
+                           (101, "蓝英雄"), (102, "蓝工程"), (103, "蓝步兵3"), (104, "蓝步兵4"),
+                           (105, "蓝步兵5"), (106, "蓝空中"), (107, "蓝哨兵"), (109, "蓝雷达")):
+            self.robot_combo.addItem(label, rid)
+        self.robot_combo.setCurrentIndex(6)
+        cfg.addWidget(self.robot_combo)
+        cfg.addWidget(QLabel("比赛时长(s):"))
+        self.match_duration = QDoubleSpinBox()
+        self.match_duration.setRange(10.0, 600.0)
+        self.match_duration.setValue(300.0)
+        cfg.addWidget(self.match_duration)
+        cfg.addWidget(QLabel("射击间隔(s):"))
+        self.shoot_interval = QDoubleSpinBox()
+        self.shoot_interval.setRange(0.1, 5.0)
+        self.shoot_interval.setDecimals(1)
+        self.shoot_interval.setValue(0.6)
+        cfg.addWidget(self.shoot_interval)
+        cfg.addStretch(1)
+        layout.addLayout(cfg)
+
+        hint = QLabel("流程: 未开始(10s) → 准备(120s) → 十五秒自检 → 五秒倒计时 → "
+                      "比赛(按设定时长) → 结算 → 结束；比赛中自动产生射击/伤害/判罚/结果事件")
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+
+        self._build_scheduler()
+        self.timer = QTimer(self)
+        self.timer.setInterval(20)
+        self.timer.timeout.connect(self._tick)
+
+    def _build_scheduler(self) -> None:
+        periodic = [0x0001, 0x0003, 0x0101, 0x0104, 0x0105,
+                    0x0201, 0x0202, 0x0203, 0x0204, 0x0208, 0x0209, 0x020A,
+                    0x020B, 0x020C, 0x020D, 0x020E]
+        for cmd_id in periodic:
+            spec = COMMANDS[cmd_id]
+            self._scheduler.add(SchedEntry(cmd_id, 1.0 / (spec.freq or 1.0),
+                                           self._builder(spec)))
+
+    def _builder(self, spec: CommandSpec):
+        def build() -> bytes:
+            values = default_values(spec)
+            values.update(self.flow.values())
+            return build_frame(spec.cmd_id, encode_command(spec, values), self._next_seq())
+        return build
+
+    def _toggle(self) -> None:
+        if self._running:
+            self.timer.stop()
+            self.start_btn.setText("开始比赛流程")
+            self._running = False
+            return
+        self._reset()
+        self._running = True
+        self.start_btn.setText("停止")
+        self._last_tick = time.monotonic()
+        self.timer.start()
+
+    def _reset(self) -> None:
+        self.timer.stop()
+        self.flow = MatchFlow(MatchConfig(
+            robot_id=self.robot_combo.currentData(),
+            match_duration=self.match_duration.value(),
+            shoot_interval=self.shoot_interval.value(),
+        ))
+        self._build_scheduler()
+        self._total_sent = 0
+        self._running = False
+        self.start_btn.setText("开始比赛流程")
+        self._update_labels()
+
+    def _tick(self) -> None:
+        now = time.monotonic()
+        dt = now - self._last_tick
+        self._last_tick = now
+        for event in self.flow.update(dt):
+            self._handle_event(event)
+        for frame in self._scheduler.tick(now):
+            self._send_cb(frame, "比赛流程")
+            self._total_sent += 1
+        if self.flow.phase >= 6:
+            self.timer.stop()
+            self._running = False
+            self.start_btn.setText("重新开始")
+        self._update_labels()
+
+    def _handle_event(self, event: dict) -> None:
+        kind = event["type"]
+        if kind == "phase":
+            return
+        if kind == "shoot":
+            values = default_values(COMMANDS[0x0207])
+            values.update(self.flow.values())
+            values.update({"bullet_type": event["bullet_type"],
+                           "shooter_number": event["shooter_number"],
+                           "launching_frequency": event["frequency"],
+                           "initial_speed": event["speed"]})
+            self._send_cb(build_frame(0x0207, encode_command(COMMANDS[0x0207], values),
+                                      self._next_seq()), "射击事件")
+            self._total_sent += 1
+        elif kind == "hurt":
+            values = default_values(COMMANDS[0x0206])
+            values.update({"armor_id": event["armor_id"], "hurt_type": event["hurt_type"]})
+            self._send_cb(build_frame(0x0206, encode_command(COMMANDS[0x0206], values),
+                                      self._next_seq()), "伤害事件")
+            self._total_sent += 1
+        elif kind == "warning":
+            values = default_values(COMMANDS[0x0104])
+            values.update({"level": event["level"], "offending_robot_id": self.flow.config.robot_id,
+                           "count": event["count"]})
+            self._send_cb(build_frame(0x0104, encode_command(COMMANDS[0x0104], values),
+                                      self._next_seq()), "判罚事件")
+            self._total_sent += 1
+        elif kind == "result":
+            self._send_cb(build_frame(0x0002, bytes([event["winner"]]), self._next_seq()),
+                          "比赛结果")
+            self._total_sent += 1
+
+    def _update_labels(self) -> None:
+        self.phase_label.setText(f"阶段: {self.flow.phase_name}")
+        self.remain_label.setText(f"剩余: {int(self.flow.phase_remain)}s")
+        self.sent_label.setText(f"已发送: {self._total_sent}")
+        duration = self.flow.phase_duration
+        if duration > 0:
+            self.progress.setValue(int((1.0 - self.flow.phase_elapsed / duration) * 1000))
+        else:
+            self.progress.setValue(0)
