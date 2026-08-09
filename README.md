@@ -127,6 +127,8 @@ python -m referee_sim_app        # 或双击 run_gui.bat
   解码显示，0x0310 大数据支持多行十六进制查看。
 - 记录回放：JSONL 格式（`{"t": 秒, "dir": "TX"/"RX", "hex": "..."}`），
   记录全部收发，回放时按时间戳和倍速发送。
+- 参数记忆：串口/波特率/模式/场景/机器人 ID/MQTT 配置/窗口位置自动保存到
+  `%APPDATA%\RefereeSim\config.json`，下次启动自动恢复。
 
 ### 8.3 协议基准与已知的官方文档矛盾
 
@@ -165,3 +167,13 @@ python -m pytest tools/referee_sim/tests -q
 覆盖：CRC 与官方表/固件一致、帧构建/流式解析、全部命令长度、位域编解码、
 0x0301 UI 图形位域布局、错误注入健壮性、自定义客户端 Protobuf 编解码与
 MQTT 端到端回环（76 项测试）。
+
+### 8.6 打包 exe
+
+```bash
+pip install -r requirements-dev.txt
+build_exe.bat        # 或 python -m PyInstaller --noconfirm RefereeSim.spec
+```
+
+产物为 `dist\RefereeSim.exe`（单文件，无需 Python 环境）。支持 `--smoke`
+自检参数（启动 2 秒后自动关闭并保存配置，用于验证打包是否正常）。

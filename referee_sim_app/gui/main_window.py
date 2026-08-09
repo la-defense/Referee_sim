@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..core.recorder import Recorder
+from ..core.settings import AppSettings, load_settings, save_settings
 from ..core.transport import LoopbackTransport, SerialTransport, list_serial_ports
 from ..protocol.frame import FrameParser
 from .client_tab import ClientTab
@@ -41,6 +42,7 @@ class MainWindow(QMainWindow):
         self.seq = 0
         self.tx_count = 0
         self.rx_count = 0
+        self._settings = load_settings()
 
         self._build_connection_bar()
         self.receive_tab = ReceiveTab()
@@ -66,6 +68,7 @@ class MainWindow(QMainWindow):
         self.statusBar().addPermanentWidget(self.tx_label)
         self.statusBar().addPermanentWidget(self.rx_label)
         self.statusBar().addPermanentWidget(self.conn_label)
+        self._apply_settings()
 
     def _build_connection_bar(self) -> None:
         bar = QWidget()
@@ -103,6 +106,55 @@ class MainWindow(QMainWindow):
             idx = self.port_combo.findText(current)
             if idx >= 0:
                 self.port_combo.setCurrentIndex(idx)
+
+    def _apply_settings(self) -> None:
+        s = self._settings
+        if s.mode and self.mode_combo.findText(s.mode) >= 0:
+            self.mode_combo.setCurrentText(s.mode)
+        if s.port:
+            if self.port_combo.findText(s.port) < 0:
+                self.port_combo.addItem(s.port)
+            self.port_combo.setCurrentText(s.port)
+        if s.baud:
+            if self.baud_combo.findText(str(s.baud)) < 0:
+                self.baud_combo.addItem(str(s.baud))
+            self.baud_combo.setCurrentText(str(s.baud))
+        if 0 <= s.scenario < self.scheduler_tab.scenario_combo.count():
+            self.scheduler_tab.scenario_combo.setCurrentIndex(s.scenario)
+        ridx = self.scheduler_tab.robot_combo.findData(s.robot_id)
+        if ridx >= 0:
+            self.scheduler_tab.robot_combo.setCurrentIndex(ridx)
+        ridx = self.match_tab.robot_combo.findData(s.robot_id)
+        if ridx >= 0:
+            self.match_tab.robot_combo.setCurrentIndex(ridx)
+        self.match_tab.match_duration.setValue(s.match_duration)
+        self.match_tab.shoot_interval.setValue(s.shoot_interval)
+        self.client_tab.host_ed.setText(s.mqtt_host)
+        self.client_tab.port_spin.setValue(s.mqtt_port)
+        self.client_tab.client_id_ed.setText(s.mqtt_client_id)
+        self.replay_tab.rec_path.setText(s.record_path or self.replay_tab.rec_path.text())
+        self.replay_tab.rep_path.setText(s.replay_path)
+        self.replay_tab.speed_spin.setValue(s.replay_speed)
+        if len(s.window) == 4 and min(s.window) >= 0:
+            self.setGeometry(*s.window)
+
+    def _collect_settings(self) -> None:
+        s = self._settings
+        s.mode = self.mode_combo.currentText()
+        s.port = self.port_combo.currentText()
+        s.baud = int(self.baud_combo.currentText())
+        s.scenario = self.scheduler_tab.scenario_combo.currentIndex()
+        s.robot_id = self.scheduler_tab.robot_combo.currentData()
+        s.match_duration = self.match_tab.match_duration.value()
+        s.shoot_interval = self.match_tab.shoot_interval.value()
+        s.mqtt_host = self.client_tab.host_ed.text().strip()
+        s.mqtt_port = self.client_tab.port_spin.value()
+        s.mqtt_client_id = self.client_tab.client_id_ed.text().strip()
+        s.record_path = self.replay_tab.rec_path.text()
+        s.replay_path = self.replay_tab.rep_path.text()
+        s.replay_speed = self.replay_tab.speed_spin.value()
+        g = self.geometry()
+        s.window = (g.x(), g.y(), g.width(), g.height())
 
     def next_seq(self) -> int:
         seq = self.seq
@@ -179,6 +231,8 @@ class MainWindow(QMainWindow):
         self.rx_label.setText(f"RX: {self.rx_count}")
 
     def closeEvent(self, event) -> None:  # noqa: N802
+        self._collect_settings()
+        save_settings(self._settings)
         self._disconnect()
         self.recorder.stop()
         super().closeEvent(event)
